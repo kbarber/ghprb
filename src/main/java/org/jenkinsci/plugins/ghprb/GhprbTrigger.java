@@ -36,21 +36,14 @@ import org.kohsuke.stapler.StaplerRequest;
  * @author Honza Brázdil <jbrazdil@redhat.com>
  */
 public final class GhprbTrigger extends Trigger<AbstractProject<?, ?>> {
-	public final String adminlist;
-	public       String whitelist;
-	public final String orgslist;
-	public final String cron;
-	public       String msgSuccess;
-	public       String msgFailure;
+	private final String adminlist;
+	private       String whitelist;
+	private final String orgslist;
+	private final String cron;
+	private       String msgSuccess;
+	private       String msgFailure;
 
-	transient private GhprbRepo                      repository;
-	transient private Map<Integer,GhprbPullRequest>  pulls;
-	transient         boolean                        changed;
-	transient         HashSet<String>                admins;
-	transient         HashSet<String>                whitelisted;
-	transient         HashSet<String>                organisations;
-
-	private static final Pattern githubUserRepoPattern = Pattern.compile("^(http[s]?://[^/]*)/([^/]*)/([^/]*).*");
+	transient private GhprbMiddleLayer ml;
 
 	@DataBoundConstructor
 	public GhprbTrigger(String adminlist, String whitelist, String orgslist, String cron, String msgSuccess, String msgFailure) throws ANTLRException{
@@ -65,32 +58,15 @@ public final class GhprbTrigger extends Trigger<AbstractProject<?, ?>> {
 
 	@Override
 	public void start(AbstractProject<?, ?> project, boolean newInstance) {
-		String projectName = project.getFullName();
-
-		pulls = DESCRIPTOR.getPullRequests(projectName);
-
-		GithubProjectProperty ghpp = project.getProperty(GithubProjectProperty.class);
-		if(ghpp == null || ghpp.getProjectUrl() == null) {
-			Logger.getLogger(GhprbTrigger.class.getName()).log(Level.WARNING, "A github project url is required.");
+		try{
+			ml = GhprbMiddleLayer.getBuilder()
+			     .setProject(project)
+			     .setTrigger(this)
+			     .setPulls(DESCRIPTOR.getPullRequests(project.getFullName()))
+			     .build();
+		}catch(IllegalStateException ex){
+			Logger.getLogger(GhprbTrigger.class.getName()).log(Level.SEVERE, "Can't start trigger");
 			return;
-		}
-
-		Matcher m = githubUserRepoPattern.matcher(ghpp.getProjectUrl().baseUrl());
-		if(!m.matches()) {
-			Logger.getLogger(GhprbTrigger.class.getName()).log(Level.WARNING, "Invalid github project url: {0}", ghpp.getProjectUrl().baseUrl());
-			return;
-		}
-		String githubServer = m.group(1);
-		String user = m.group(2);
-		String repo = m.group(3);
-		repository = new GhprbRepo(this, githubServer, user, repo);
-
-		admins = new HashSet<String>(Arrays.asList(adminlist.split("\\s+")));
-		whitelisted = new HashSet<String>(Arrays.asList(whitelist.split("\\s+")));
-		if(orgslist == null){
-			organisations = new HashSet<String>();
-		}else{
-			organisations = new HashSet<String>(Arrays.asList(orgslist.split("\\s+")));
 		}
 
 		super.start(project, newInstance);
@@ -98,11 +74,10 @@ public final class GhprbTrigger extends Trigger<AbstractProject<?, ?>> {
 
 	@Override
 	public void stop() {
-		whitelisted = null;
-		admins = null;
-		organisations = null;
-		repository = null;
-		pulls = null;
+		if(ml != null){
+			ml.stop();
+			ml = null;
+		}
 		super.stop();
 	}
 
@@ -133,14 +108,38 @@ public final class GhprbTrigger extends Trigger<AbstractProject<?, ?>> {
 
 	@Override
 	public void run() {
-		changed = false;
-		repository.check(pulls);
-		if(changed) try {
+		ml.run();
+		DESCRIPTOR.save();
+	}
+
+	public void addWhitelist(String author){
+		whitelist = whitelist + " " + author;
+		try {
 			this.job.save();
 		} catch (IOException ex) {
-			Logger.getLogger(GhprbTrigger.class.getName()).log(Level.SEVERE, null, ex);
+			Logger.getLogger(GhprbTrigger.class.getName()).log(Level.SEVERE, "Failed to save new whitelist", ex);
 		}
-		DESCRIPTOR.save();
+	}
+
+	public String getAdminlist() {
+		if(adminlist == null){
+			return "";
+		}
+		return adminlist;
+	}
+
+	public String getWhitelist() {
+		if(whitelist == null){
+			return "";
+		}
+		return whitelist;
+	}
+
+	public String getOrgslist() {
+		if(orgslist == null){
+			return "";
+		}
+		return orgslist;
 	}
 
 	@Override

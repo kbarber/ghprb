@@ -19,6 +19,7 @@ public class GhprbBuild {
 	private final boolean merge;
 	private AbstractBuild<?, ?> build;
 	private boolean finished;
+	private GhprbHelper helper;
 
 	GhprbBuild(GhprbRepo repo, int pull, QueueTaskFuture<?> future, boolean merge) {
 		this.repo = repo;
@@ -124,7 +125,7 @@ public class GhprbBuild {
 		}
 
 		// close failed pull request automatically
-		if (state == GHCommitState.FAILURE && repo.isAutoCloseFailedPullRequests()) {
+		if (state == GHCommitState.FAILURE && repo.getHelper().isAutoCloseFailedPullRequests()) {
 			repo.closePullRequest(pull);
 		}
 	}

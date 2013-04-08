@@ -1,93 +1,61 @@
 package org.jenkinsci.plugins.ghprb;
 
 import hudson.model.AbstractBuild;
-import hudson.model.queue.QueueTaskFuture;
 import java.io.IOException;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import java.util.regex.Pattern;
 import jenkins.model.Jenkins;
 import org.kohsuke.github.GHCommitState;
 import org.kohsuke.github.GHIssueState;
-import org.kohsuke.github.GHOrganization;
 import org.kohsuke.github.GHPullRequest;
 import org.kohsuke.github.GHRepository;
-import org.kohsuke.github.GHUser;
-import org.kohsuke.github.GitHub;
 
 /**
  * @author Honza Brázdil <jbrazdil@redhat.com>
  */
 public class GhprbRepo {
-	private final GhprbTrigger trigger;
-	private final Pattern retestPhrasePattern;
-	private final Pattern whitelistPhrasePattern;
-	private final Pattern oktotestPhrasePattern;
 	private final String reponame;
-	private final String requestForTestingMessage;
-	private final String githubServer;
 
-	private final HashSet<GhprbBuild> builds;
+	private Map<Integer,GhprbPullRequest> pulls;
 
-	private GitHub gh;
+	private GhprbGitHub gh;
 	private GHRepository repo;
+	private GhprbHelper helper;
 
-	public GhprbRepo(GhprbTrigger trigger, String githubServer, String user, String repository){
-		this.trigger = trigger;
-		this.githubServer = githubServer;
+	public GhprbRepo(GhprbGitHub gh,
+	                 String user,
+	                 String repository,
+	                 GhprbHelper helper,
+	                 Map<Integer,GhprbPullRequest> pulls){
+		this.gh = gh;
 		reponame = user + "/" + repository;
-
-		gh = connect();
-
-		retestPhrasePattern = Pattern.compile(trigger.getDescriptor().getRetestPhrase());
-		whitelistPhrasePattern = Pattern.compile(trigger.getDescriptor().getWhitelistPhrase());
-		oktotestPhrasePattern = Pattern.compile(trigger.getDescriptor().getOkToTestPhrase());
-		requestForTestingMessage = trigger.getDescriptor().getRequestForTestingPhrase();
-
-		builds = new HashSet<GhprbBuild>();
+		this.helper = helper;
+		this.pulls = pulls;
 	}
 
-	private GitHub connect(){
-		GitHub gitHub = null;
-		String accessToken = trigger.getDescriptor().getAccessToken();
-		String serverAPIUrl = trigger.getDescriptor().getServerAPIUrl();
-		if(accessToken != null && !accessToken.isEmpty()) {
-			try {
-				gitHub = GitHub.connectUsingOAuth(serverAPIUrl, accessToken);
-			} catch(IOException e) {
-				Logger.getLogger(GhprbRepo.class.getName()).log(Level.SEVERE, "Can't connect to "+serverAPIUrl+" using oauth", e);
-			}
-		} else {
-			gitHub = GitHub.connect(trigger.getDescriptor().getUsername(), null, trigger.getDescriptor().getPassword());
+	public void init(){
+		for(GhprbPullRequest pull : pulls.values()){
+			pull.init(helper,this);
 		}
-		return gitHub;
 	}
 
 	private boolean checkState(){
-		if(gh == null){
-			gh = connect();
-		}
-		if(gh == null) return false;
 		if(repo == null){
 			try {
-				repo = gh.getRepository(reponame);
+				repo = gh.get().getRepository(reponame);
 			} catch (IOException ex) {
 				Logger.getLogger(GhprbRepo.class.getName()).log(Level.SEVERE, "Could not retrieve repo named " + reponame + " (Do you have properly set 'GitHub project' field in job configuration?)", ex);
+				return false;
 			}
-		}
-		if(repo == null){
-			Logger.getLogger(GhprbRepo.class.getName()).log(Level.SEVERE, "Could not retrieve repo named {0} (Do you have properly set 'GitHub project' field in job configuration?)", reponame);
-			return false;
 		}
 		return true;
 	}
 
-	public void check(Map<Integer,GhprbPullRequest> pulls){
+	public void check(){
 		if(!checkState()) return;
 
 		List<GHPullRequest> prs;
@@ -100,20 +68,24 @@ public class GhprbRepo {
 		Set<Integer> closedPulls = new HashSet<Integer>(pulls.keySet());
 
 		for(GHPullRequest pr : prs){
+			check(pr);
+			closedPulls.remove(pr.getNumber());
+		}
+
+		removeClosed(closedPulls, pulls);
+	}
+
+	private void check(GHPullRequest pr){
 			Integer id = pr.getNumber();
 			GhprbPullRequest pull;
 			if(pulls.containsKey(id)){
 				pull = pulls.get(id);
 			}else{
-				pull = new GhprbPullRequest(pr, this);
+				pull = new GhprbPullRequest(pr);
+				pull.init(helper, this);
 				pulls.put(id, pull);
 			}
-			pull.check(pr,this);
-			closedPulls.remove(id);
-		}
-
-		removeClosed(closedPulls, pulls);
-		checkBuilds();
+			pull.check(pr);
 	}
 
 	private void removeClosed(Set<Integer> closedPulls, Map<Integer,GhprbPullRequest> pulls) {
@@ -121,17 +93,6 @@ public class GhprbRepo {
 
 		for(Integer id : closedPulls){
 			pulls.remove(id);
-		}
-	}
-
-	private void checkBuilds(){
-		Iterator<GhprbBuild> it = builds.iterator();
-		while(it.hasNext()){
-			GhprbBuild build = it.next();
-			build.check();
-			if(build.isFinished()){
-				it.remove();
-			}
 		}
 	}
 
@@ -145,7 +106,7 @@ public class GhprbRepo {
 		try {
 			repo.createCommitStatus(sha1, state, url, message);
 		} catch (IOException ex) {
-			if(trigger.getDescriptor().getUseComments()){
+			if(GhprbTrigger.DESCRIPTOR.getUseComments()){
 				Logger.getLogger(GhprbRepo.class.getName()).log(Level.INFO, "Could not update commit status of the Pull Request on Github. Trying to send comment.", ex);
 				addComment(id, message);
 			}else{
@@ -154,50 +115,12 @@ public class GhprbRepo {
 		}
 	}
 
-	public boolean cancelBuild(int id) {
-		Iterator<GhprbBuild> it = builds.iterator();
-		while(it.hasNext()){
-			GhprbBuild build  = it.next();
-			if (build.getPullID() == id) {
-				if (build.cancel()) {
-					it.remove();
-					return true;
-				}
-			}
-		}
-		return false;
-	}
-
 	public String getName() {
 		return reponame;
 	}
 
-	public boolean isWhitelisted(String username){
-		return trigger.whitelisted.contains(username) || trigger.admins.contains(username) || isInWhitelistedOrganisation(username);
-	}
-
-	public boolean isAdmin(String username){
-		return trigger.admins.contains(username);
-	}
-
-	public boolean isRetestPhrase(String comment){
-		return retestPhrasePattern.matcher(comment).matches();
-	}
-
-	public boolean isWhitelistPhrase(String comment){
-		return whitelistPhrasePattern.matcher(comment).matches();
-	}
-
-	public boolean isOktotestPhrase(String comment){
-		return oktotestPhrasePattern.matcher(comment).matches();
-	}
-
-	public boolean isAutoCloseFailedPullRequests() {
-		return trigger.getDescriptor().getAutoCloseFailedPullRequests();
-	}
-
-	public String getDefaultComment() {
-		return requestForTestingMessage;
+	public GhprbHelper getHelper() {
+		return helper;
 	}
 
 	public void addComment(int id, String comment) {
@@ -216,52 +139,7 @@ public class GhprbRepo {
 		}
 	}
 
-	public void addWhitelist(String author) {
-		Logger.getLogger(GhprbRepo.class.getName()).log(Level.INFO, "Adding {0} to whitelist", author);
-		trigger.whitelist = trigger.whitelist + " " + author;
-		trigger.whitelisted.add(author);
-		trigger.changed = true;
-	}
-
-	public boolean isMe(String username){
-		return trigger.getDescriptor().getUsername().equals(username);
-	}
-
-	public void startJob(int id, String commit, boolean merged){
-		QueueTaskFuture<?> build = trigger.startJob(new GhprbCause(commit, id, merged));
-		if(build == null){
-			Logger.getLogger(GhprbRepo.class.getName()).log(Level.SEVERE, "Job didn't started");
-			return;
-		}
-		builds.add(new GhprbBuild(this, id, build, true));
-	}
-
-	public boolean isUserMemberOfOrganization(String organisation, String member){
-		try {
-			GHOrganization org = gh.getOrganization(organisation);
-			List<GHUser> members = org.getMembers();
-			for(GHUser user : members){
-				if(user.getLogin().equals(member)){
-					return true;
-				}
-			}
-		} catch (IOException ex) {
-			Logger.getLogger(GhprbRepo.class.getName()).log(Level.SEVERE, null, ex);
-			return false;
-		}
-		return false;
-	}
-
 	public String getRepoUrl(){
-		return githubServer+"/"+reponame;
-	}
-
-	private boolean isInWhitelistedOrganisation(String username) {
-		for(String organisation : trigger.organisations){
-			if(isUserMemberOfOrganization(organisation,username)){
-				return true;
-			}
-		}
-		return false;
+		return gh.getGitHubServer()+"/"+reponame;
 	}
 }
