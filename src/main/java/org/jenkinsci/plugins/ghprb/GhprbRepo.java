@@ -2,6 +2,8 @@ package org.jenkinsci.plugins.ghprb;
 
 import hudson.model.AbstractBuild;
 import java.io.IOException;
+import java.net.URL;
+import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -10,6 +12,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import jenkins.model.Jenkins;
 import org.kohsuke.github.GHCommitState;
+import org.kohsuke.github.GHEvent;
 import org.kohsuke.github.GHIssueState;
 import org.kohsuke.github.GHPullRequest;
 import org.kohsuke.github.GHRepository;
@@ -141,5 +144,9 @@ public class GhprbRepo {
 
 	public String getRepoUrl(){
 		return gh.getGitHubServer()+"/"+reponame;
+	}
+
+	public void createHook() throws IOException{
+		repo.createWebHook(new URL("url"), EnumSet.of(GHEvent.ISSUE_COMMENT, GHEvent.PULL_REQUEST));
 	}
 }
