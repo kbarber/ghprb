@@ -135,6 +135,33 @@ public class GhprbRepo {
 		}
 	}
 
+	/**
+	 * This method updates the status, either via using the Github commit status
+	 * or via comments, depending on the user setting.
+	 * 
+	 * @param build
+	 * @param state
+	 * @param message
+	 * @param id
+	 */
+	public void updateStatus(AbstractBuild<?,?> build, GHCommitState state, String message, int id) {
+	    if (trigger.getDescriptor().getUseComments()) {
+	        String newMessage = message + " (Status: " + state.toString() + ", Details: " + Jenkins.getInstance().getRootUrl() + build.getUrl() + ")";
+	        addComment(id, newMessage);
+	    } else {
+	        createCommitStatus(build, state, message, id);
+	    }
+	}
+	
+    public void updateStatus(String build, GHCommitState state, String url, String message, int id) {
+        if (trigger.getDescriptor().getUseComments()) {
+            String newMessage = message + " (Status: " + state.toString() + ", Details: " + url + ")";
+            addComment(id, newMessage);
+        } else {
+            createCommitStatus(build, state, url, message, id);
+        }
+    }
+	
 	public void createCommitStatus(AbstractBuild<?,?> build, GHCommitState state, String message, int id){
 		String sha1 = build.getCause(GhprbCause.class).getCommit();
 		createCommitStatus(sha1, state, Jenkins.getInstance().getRootUrl() + build.getUrl(), message, id);

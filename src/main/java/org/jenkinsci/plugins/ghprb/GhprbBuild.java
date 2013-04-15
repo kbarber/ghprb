@@ -93,7 +93,8 @@ public class GhprbBuild {
 	}
 
 	protected void onStarted() {
-		repo.createCommitStatus(build, GHCommitState.PENDING, (merge ? "Merged build started." : "Build started."),pull);
+        repo.updateStatus(build, GHCommitState.PENDING, (merge ? "Merged build started." : "Build started."),pull);
+
 		try {
 			build.setDescription("<a href=\"" + repo.getRepoUrl()+"/pull/"+pull+"\">Pull request #"+pull+"</a>");
 		} catch (IOException ex) {
@@ -110,18 +111,7 @@ public class GhprbBuild {
 		} else {
 			state = GHCommitState.FAILURE;
 		}
-		repo.createCommitStatus(build, state, (merge ? "Merged build finished." : "Build finished."),pull );
-
-		String publishedURL = GhprbTrigger.DESCRIPTOR.getPublishedURL();
-		if (publishedURL != null && !publishedURL.isEmpty()) {
-			String msg;
-			if (state == GHCommitState.SUCCESS) {
-				msg = GhprbTrigger.DESCRIPTOR.getMsgSuccess();
-			} else {
-				msg = GhprbTrigger.DESCRIPTOR.getMsgFailure();
-			}
-			repo.addComment(pull, msg + "\nRefer to this link for build results: " + publishedURL + build.getUrl());
-		}
+		repo.updateStatus(build, state, (merge ? "Merged build finished." : "Build finished."),pull );
 
 		// close failed pull request automatically
 		if (state == GHCommitState.FAILURE && repo.isAutoCloseFailedPullRequests()) {
